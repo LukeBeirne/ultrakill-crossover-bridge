@@ -133,8 +133,19 @@ namespace UltrakillBridge.Guest
             }
             if (f10) Terrain.TerrainManager.DebugDraw = !Terrain.TerrainManager.DebugDraw;
             UpdateDebugLabel();
+            // After the host hands control back, the switch key must be released once before it counts again.
+            if (_switchNeedsRelease && !SwitchKeyHeld()) _switchNeedsRelease = false;
             if (!InBridgeScene || !_alive) return;
-            if (sw && !HostMode) EnterHostMode();
+            if (sw && !HostMode && !_switchNeedsRelease) EnterHostMode();
+        }
+
+        private bool _switchNeedsRelease;
+
+        private static bool SwitchKeyHeld()
+        {
+            KeyCode key = BridgeConfig.SwitchKey.Value;
+            int vk = VirtualKey(key);
+            return vk != 0 ? (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0 : Input.GetKey(key);
         }
 
         // ---- keys ----------------------------------------------------------------------------
@@ -153,10 +164,12 @@ namespace UltrakillBridge.Guest
             int vk = VirtualKey(key);
             if (vk != 0)
             {
-                bool down = _overlay != null && _overlay.OwnsForeground && (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0;
+                // Track the physical key whatever has the focus; only a press that starts while ULTRAKILL has it
+                // counts. (Taking the focus back with the host's F8 still held must not read as a new press.)
+                bool down = (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0;
                 _rawDown.TryGetValue(key, out bool was);
                 _rawDown[key] = down;
-                raw = down && !was;
+                raw = down && !was && _overlay != null && _overlay.OwnsForeground;
             }
             if (!unity && !raw) return false;
             float now = Time.unscaledTime;
@@ -541,6 +554,7 @@ namespace UltrakillBridge.Guest
         private void ExitHostMode()
         {
             HostMode = false;
+            _switchNeedsRelease = true;
             _recallPending = true;
             _overlay.ExitHostMode();
             Plugin.Log.LogInfo("Control -> ULTRAKILL.");
