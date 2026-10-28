@@ -83,6 +83,7 @@ namespace UltrakillBridge.Guest.Platform
         public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint colorKey, out byte alpha, out uint flags);
         [DllImport("user32.dll")] public static extern int SetWindowRgn(IntPtr hwnd, IntPtr rgn, bool redraw);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hwnd);
         [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hwnd);
