@@ -32,6 +32,36 @@ namespace UltrakillBridge.Guest
 
         public static bool Grounded(NewMovement nm) => nm.gc != null && nm.gc.onGround;
 
+        private static Vector3 _lastPos;
+        private static float _lastPosTime = -1f;
+        private static Vector3 _measured;
+
+        /// <summary>
+        /// How fast V1 is really moving (units/s). Rocket rides zero V1's rigidbody velocity every FixedUpdate and move it
+        /// with the rocket (Grenade.FixedUpdate), so this uses the rocket's velocity then, and otherwise the larger of the
+        /// rigidbody velocity and the measured frame-to-frame motion. Call once per frame.
+        /// </summary>
+        public static Vector3 MotionVelocity(NewMovement nm)
+        {
+            Vector3 pos = nm.transform.position;
+            float now = Time.time;
+            float dt = now - _lastPosTime;
+            if (_lastPosTime >= 0f && dt > 1e-4f && dt < 0.25f)
+            {
+                Vector3 v = (pos - _lastPos) / dt;
+                // A recall or respawn moves V1 hundreds of units in one frame: not motion.
+                _measured = v.sqrMagnitude < 250f * 250f ? Vector3.Lerp(_measured, v, 0.5f) : Vector3.zero;
+            }
+            else if (dt >= 0.25f) _measured = Vector3.zero;
+            _lastPos = pos;
+            _lastPosTime = now;
+
+            var rocket = nm.ridingRocket;
+            if (rocket != null && rocket.rb != null) return rocket.rb.velocity;
+            Vector3 rb = nm.rb != null ? nm.rb.velocity : Vector3.zero;
+            return _measured.sqrMagnitude > rb.sqrMagnitude ? _measured : rb;
+        }
+
         /// <summary>
         /// Moves V1 with its feet at <paramref name="feet"/> facing <paramref name="yawDeg"/>, the way checkpoints do
         /// (CheckPoint.ResetRoom), without reloading anything. Revives V1 if it is dead.

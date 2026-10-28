@@ -735,6 +735,9 @@ namespace UltrakillBridge.Guest.Platform
 
         private bool IsWindowOk() => _hwnd != IntPtr.Zero && IsWindow(_hwnd);
 
+        /// <summary>ULTRAKILL's window is the foreground window (it gets the keyboard).</summary>
+        public bool OwnsForeground => _hwnd != IntPtr.Zero && GetForegroundWindow() == _hwnd;
+
         private readonly System.Collections.Generic.HashSet<string> _logged = new System.Collections.Generic.HashSet<string>();
 
         private void LogOnce(string key, string message)

@@ -9,6 +9,7 @@ using UltrakillBridge.Guest.Render;
 using UltrakillBridge.Guest.Terrain;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 namespace UltrakillBridge.Guest
 {
@@ -123,10 +124,53 @@ namespace UltrakillBridge.Guest
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F9)) _showDebug = !_showDebug;
-            if (Input.GetKeyDown(KeyCode.F10)) Terrain.TerrainManager.DebugDraw = !Terrain.TerrainManager.DebugDraw;
+            bool f9 = KeyPressed(KeyCode.F9), f10 = KeyPressed(KeyCode.F10);
+            bool sw = KeyPressed(BridgeConfig.SwitchKey.Value);
+            if (f9)
+            {
+                _showDebug = !_showDebug;
+                Plugin.Log.LogInfo("Diagnostics overlay " + (_showDebug ? "ON." : "OFF."));
+            }
+            if (f10) Terrain.TerrainManager.DebugDraw = !Terrain.TerrainManager.DebugDraw;
+            UpdateDebugLabel();
             if (!InBridgeScene || !_alive) return;
-            if (Input.GetKeyDown(BridgeConfig.SwitchKey.Value) && !HostMode) EnterHostMode();
+            if (sw && !HostMode) EnterHostMode();
+        }
+
+        // ---- keys ----------------------------------------------------------------------------
+        // Unity only sees keys that reach ULTRAKILL's window as messages; a global hotkey registered by another program
+        // (overlays, voice chat, mouse/keyboard software) swallows them. The physical key state still changes, so it is
+        // also polled while ULTRAKILL has the focus (as the host does for its own F8).
+
+        private const float KeyDebounceSeconds = 0.2f;
+        private readonly Dictionary<KeyCode, bool> _rawDown = new Dictionary<KeyCode, bool>();
+        private readonly Dictionary<KeyCode, float> _lastPress = new Dictionary<KeyCode, float>();
+
+        private bool KeyPressed(KeyCode key)
+        {
+            bool unity = Input.GetKeyDown(key);
+            bool raw = false;
+            int vk = VirtualKey(key);
+            if (vk != 0)
+            {
+                bool down = _overlay != null && _overlay.OwnsForeground && (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0;
+                _rawDown.TryGetValue(key, out bool was);
+                _rawDown[key] = down;
+                raw = down && !was;
+            }
+            if (!unity && !raw) return false;
+            float now = Time.unscaledTime;
+            if (_lastPress.TryGetValue(key, out float last) && now - last < KeyDebounceSeconds) return false;
+            _lastPress[key] = now;
+            return true;
+        }
+
+        private static int VirtualKey(KeyCode key)
+        {
+            if (key >= KeyCode.F1 && key <= KeyCode.F15) return 0x70 + (key - KeyCode.F1);
+            if (key >= KeyCode.A && key <= KeyCode.Z) return 'A' + (key - KeyCode.A);
+            if (key >= KeyCode.Alpha0 && key <= KeyCode.Alpha9) return '0' + (key - KeyCode.Alpha0);
+            return 0;
         }
 
         private void LateUpdate()
@@ -215,7 +259,7 @@ namespace UltrakillBridge.Guest
 
             if (Map != null && hostAlive && nm != null && !_recallPending)
             {
-                Guard("terrain", () => _terrain.Tick(Link, Map, V1.Feet(nm), nm.rb.velocity));
+                Guard("terrain", () => _terrain.Tick(Link, Map, V1.Feet(nm), V1.MotionVelocity(nm)));
                 if (Link.NowMs - _mapCreatedMs >= ZoneSettleMs) Guard("enemies", () => _enemies.Tick(Link, Map));
                 Guard("ground hold", () => HoldForGround(nm));
             }
@@ -526,19 +570,63 @@ namespace UltrakillBridge.Guest
 
         // ---- diagnostics ------------------------------------------------------------------
 
-        private void OnGUI()
+        // A uGUI label on ULTRAKILL's overlay canvas, not OnGUI: while bridged ULTRAKILL's own window is invisible and
+        // only the canvas (captured into the host's GUI layer) shows up in the host game.
+        private const float DebugRefreshSeconds = 0.25f;
+        private Text _debugLabel;
+        private float _debugNextRefresh;
+
+        private void UpdateDebugLabel()
         {
-            if (!_showDebug) return;
+            if (!_showDebug)
+            {
+                if (_debugLabel != null && _debugLabel.enabled) _debugLabel.enabled = false;
+                return;
+            }
+            if (!EnsureDebugLabel()) return;
+            _debugLabel.enabled = true;
+            float now = Time.unscaledTime;
+            if (now < _debugNextRefresh) return;
+            _debugNextRefresh = now + DebugRefreshSeconds;
             var sb = new StringBuilder();
             sb.AppendLine($"UKBridge {Plugin.Version}  host {(_alive ? "alive" : "not running")}  frame {Link.HostFrame}");
             sb.AppendLine($"state flags {_state.flags:X}  zone {_state.stageId:X8}  driving {Driving}  hostMode {HostMode}");
             sb.AppendLine($"recall pending {_recallPending}  holding {_holdingForGround}  map {(Map == null ? "-" : Map.Zone.ToString("X8"))}");
+            var nm = V1.Movement;
+            if (nm != null) sb.AppendLine($"speed {V1.MotionVelocity(nm).magnitude * (Map != null ? Map.MetresPerUnit : 1f):F1} m/s{(nm.ridingRocket != null ? "  (rocket ride)" : "")}");
             sb.AppendLine($"terrain: {_terrain.Status}");
             sb.AppendLine($"enemies: {_enemies.Status}");
             sb.AppendLine($"capture: {_capture.Status}");
             sb.AppendLine($"window: {_overlay.Status}");
-            sb.AppendLine($"interact: {_interaction.Status}");
-            GUI.Label(new Rect(10, 10, 900, 200), sb.ToString());
+            sb.Append($"interact: {_interaction.Status}");
+            _debugLabel.text = sb.ToString();
+        }
+
+        private bool EnsureDebugLabel()
+        {
+            if (_debugLabel != null) return true;
+            if (!MonoSingleton<CanvasController>.TryGetInstance(out var canvas) || canvas == null) return false;
+            var go = new GameObject("UKBridge Diagnostics", typeof(RectTransform));
+            go.layer = canvas.gameObject.layer;
+            var rt = (RectTransform)go.transform;
+            rt.SetParent(canvas.transform, false);
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0f, 1f);
+            rt.anchoredPosition = new Vector2(16f, -16f);
+            rt.sizeDelta = new Vector2(1400f, 400f);
+            _debugLabel = go.AddComponent<Text>();
+            try { _debugLabel.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf"); } catch { }
+            if (_debugLabel.font == null) try { _debugLabel.font = Resources.GetBuiltinResource<Font>("Arial.ttf"); } catch { }
+            _debugLabel.fontSize = 20;
+            _debugLabel.alignment = TextAnchor.UpperLeft;
+            _debugLabel.horizontalOverflow = HorizontalWrapMode.Overflow;
+            _debugLabel.verticalOverflow = VerticalWrapMode.Overflow;
+            _debugLabel.color = Color.white;
+            _debugLabel.raycastTarget = false;
+            var outline = go.AddComponent<Outline>();
+            outline.effectColor = new Color(0f, 0f, 0f, 0.9f);
+            outline.effectDistance = new Vector2(2f, -2f);
+            _debugNextRefresh = 0f;
+            return true;
         }
     }
 }
